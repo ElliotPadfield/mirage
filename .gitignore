@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+*.dmg
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Electron
+out/
+app/
+release/
+
+# Temporary files
+*.tmp
+*.temp
+dist-renderer/
+
+# License keys (NEVER commit private key!)
+keys/private_key.pem
+
+# Runtime files
+.mirage-admin-launch.sh
+.mirage-admin-launch.sh.pid
+
+# Build binaries
+build/python/mirage-backend
+
+# Tauri
+src-tauri/target/
+src-tauri/binaries/mirage-backend-*
