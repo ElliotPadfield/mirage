@@ -1,0 +1,26 @@
+{
+  "development": {
+    "python": {
+      "buildCache": true,
+      "excludeModules": [
+        "tkinter",
+        "matplotlib", 
+        "scipy",
+        "pandas.plotting",
+        "IPython",
+        "jupyter",
+        "notebook"
+      ],
+      "optimizeLevel": 2,
+      "stripDebug": true
+    },
+    "electron": {
+      "devTools": true,
+      "reloadOnChange": true
+    },
+    "ports": {
+      "frontend": 5173,
+      "backend": 54323
+    }
+  }
+}
