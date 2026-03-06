@@ -16,6 +16,7 @@ from pymobiledevice3.remote.tunnel_service import (
     CoreDeviceTunnelProxy,
 )
 from ..models.location import Location, LocationSimulationState
+from ..cleanup import track_utun_interface, untrack_utun_interface
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,11 @@ async def _start_quic_tunnel(service_provider):
     async with service.start_quic_tunnel() as tunnel_result:
         resume_remoted_if_required()
 
+        if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+            track_utun_interface(tunnel_result.interface)
+        elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+            track_utun_interface(tunnel_result.tunnel.tun.name)
+
         logger.info(f"QUIC Address: {tunnel_result.address}")
         logger.info(f"QUIC Port: {tunnel_result.port}")
 
@@ -122,6 +128,12 @@ async def _start_quic_tunnel(service_provider):
 
         while not terminate_tunnel_thread:
             await asyncio.sleep(0.5)
+
+    # Tunnel context exited cleanly — untrack the interface
+    if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+        untrack_utun_interface(tunnel_result.interface)
+    elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+        untrack_utun_interface(tunnel_result.tunnel.tun.name)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +156,11 @@ async def _start_tcp_tunnel(udid):
     async with service.start_tcp_tunnel() as tunnel_result:
         resume_remoted_if_required()
 
+        if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+            track_utun_interface(tunnel_result.interface)
+        elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+            track_utun_interface(tunnel_result.tunnel.tun.name)
+
         logger.info(f"TCP Address: {tunnel_result.address}")
         logger.info(f"TCP Port: {tunnel_result.port}")
 
@@ -152,6 +169,12 @@ async def _start_tcp_tunnel(udid):
 
         while not terminate_tunnel_thread:
             await asyncio.sleep(0.5)
+
+    # Tunnel context exited cleanly — untrack the interface
+    if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+        untrack_utun_interface(tunnel_result.interface)
+    elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+        untrack_utun_interface(tunnel_result.tunnel.tun.name)
 
 
 # ---------------------------------------------------------------------------

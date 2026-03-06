@@ -9,6 +9,7 @@ import logging
 from src.app import create_app
 from src.config import Config
 from src.utils.helpers import get_platform_name, is_running_as_admin
+from src.cleanup import register_cleanup_handlers, startup_cleanup
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -62,10 +63,16 @@ def main():
     # Setup logging
     setup_logging(args.debug)
     logger = logging.getLogger(__name__)
-    
+
+    # Register cleanup handlers (SIGTERM, SIGINT, atexit)
+    register_cleanup_handlers()
+
+    # Clean up any leftover state from a previous crash
+    startup_cleanup()
+
     # Check privileges
     check_privileges()
-    
+
     # Create Flask app
     app = create_app()
 

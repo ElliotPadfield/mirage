@@ -65,31 +65,32 @@ async fn health_check() -> bool {
     }
 }
 
-/// Resolve the sidecar binary path from the Tauri resource directory.
-/// In production: `AppName.app/Contents/Resources/binaries/mirage-backend-<triple>`
+/// Resolve the sidecar binary path.
+/// In production: `AppName.app/Contents/MacOS/mirage-backend`
 /// In dev: `src-tauri/binaries/mirage-backend-<triple>`
 fn resolve_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     // Tauri's shell sidecar resolves the path automatically, but we need the
-    // raw path for osascript elevation. Try the resource dir first (production),
-    // then fall back to the dev-time location.
+    // raw path for osascript elevation.
     let triple = if cfg!(target_arch = "aarch64") {
         "aarch64-apple-darwin"
     } else {
         "x86_64-apple-darwin"
     };
 
-    let binary_name = format!("mirage-backend-{}", triple);
+    let binary_name_with_triple = format!("mirage-backend-{}", triple);
 
-    // Production path
+    // Production path: Tauri bundles sidecars in Contents/MacOS/ (without the triple suffix)
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let prod_path = resource_dir.join("binaries").join(&binary_name);
-        if prod_path.exists() {
-            return Some(prod_path);
+        if let Some(contents_dir) = resource_dir.parent() {
+            let macos_path = contents_dir.join("MacOS").join("mirage-backend");
+            if macos_path.exists() {
+                return Some(macos_path);
+            }
         }
     }
 
     // Dev path (relative to src-tauri)
-    let dev_path = std::path::PathBuf::from("binaries").join(&binary_name);
+    let dev_path = std::path::PathBuf::from("binaries").join(&binary_name_with_triple);
     if dev_path.exists() {
         return Some(dev_path);
     }
@@ -104,8 +105,9 @@ fn spawn_sidecar_elevated(sidecar_path: &std::path::Path) -> Result<(), String> 
 
     // Use osascript to run the sidecar with admin privileges
     // Custom prompt explains why admin is needed
+    // Quote the path and use nohup to ensure the process survives after osascript exits
     let script = format!(
-        r#"do shell script "{} --electron --port 54323 &" with administrator privileges with prompt "Mirage needs your permission to connect to your iPhone and set its location.""#,
+        r#"do shell script "nohup '{}' --electron --port 54323 > /tmp/mirage-sidecar.log 2>&1 &" with administrator privileges with prompt "Mirage needs your permission to connect to your iPhone and set its location.""#,
         path_str
     );
 
@@ -158,7 +160,7 @@ pub fn run() {
                                 println!("Falling back to non-elevated sidecar...");
                                 let shell = app_handle.shell();
                                 match shell
-                                    .sidecar("mirage-backend")
+                                    .sidecar("binaries/mirage-backend")
                                     .expect("failed to create sidecar command")
                                     .args(["--electron", "--port", "54323"])
                                     .spawn()
@@ -177,7 +179,7 @@ pub fn run() {
                         // Try Tauri's built-in sidecar resolution as last resort
                         let shell = app_handle.shell();
                         match shell
-                            .sidecar("mirage-backend")
+                            .sidecar("binaries/mirage-backend")
                             .expect("failed to create sidecar command")
                             .args(["--electron", "--port", "54323"])
                             .spawn()
@@ -213,11 +215,96 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Kill the sidecar on app exit (handles both elevated and non-elevated)
-                println!("App exiting — killing sidecar on port 54323");
-                let _ = Command::new("sh")
-                    .args(["-c", "lsof -ti:54323 2>/dev/null | xargs kill 2>/dev/null"])
-                    .status();
+                println!("App exiting — graceful sidecar shutdown");
+                graceful_sidecar_shutdown();
             }
         });
+}
+
+/// Graceful shutdown: SIGTERM → wait → SIGKILL → cleanup orphaned state.
+fn graceful_sidecar_shutdown() {
+    // 1. Find the sidecar PID(s) on port 54323
+    let pids = Command::new("sh")
+        .args(["-c", "lsof -ti:54323 2>/dev/null"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        });
+
+    if let Some(pid_str) = &pids {
+        // 2. Send SIGTERM (allows Python signal handlers to run cleanup)
+        println!("Sending SIGTERM to sidecar PIDs: {}", pid_str);
+        let _ = Command::new("sh")
+            .args(["-c", &format!("echo '{}' | xargs kill -TERM 2>/dev/null", pid_str)])
+            .status();
+
+        // 3. Wait up to 5 seconds for graceful exit
+        let mut exited = false;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let check = Command::new("sh")
+                .args(["-c", "lsof -ti:54323 2>/dev/null"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if check.is_empty() {
+                println!("Sidecar exited gracefully");
+                exited = true;
+                break;
+            }
+        }
+
+        // 4. Force kill if still running
+        if !exited {
+            println!("Sidecar did not exit in time, sending SIGKILL");
+            let _ = Command::new("sh")
+                .args(["-c", &format!("echo '{}' | xargs kill -9 2>/dev/null", pid_str)])
+                .status();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
+    // 5. Fallback cleanup: remove orphaned utun interfaces and resume remoted
+    //    This runs regardless of whether SIGTERM worked, to catch crash leftovers.
+    cleanup_orphaned_state();
+}
+
+/// Clean up orphaned utun interfaces (those with pymobiledevice3 tunnel addresses)
+/// and ensure the remoted daemon is not left suspended.
+fn cleanup_orphaned_state() {
+    // Remove IPv6 addresses from orphaned utun interfaces that have
+    // fd-prefix (ULA) addresses typical of pymobiledevice3 tunnels.
+    // These are the addresses that cause DNS routing issues.
+    let _ = Command::new("sh")
+        .args(["-c", r#"
+            for iface in $(ifconfig -l 2>/dev/null); do
+                case "$iface" in utun*)
+                    # Check if this utun has an fd-prefix IPv6 address (pymobiledevice3 tunnel)
+                    if ifconfig "$iface" 2>/dev/null | grep -q 'inet6 fd'; then
+                        echo "Cleaning orphaned tunnel interface: $iface"
+                        ifconfig "$iface" down 2>/dev/null
+                    fi
+                ;; esac
+            done
+        "#])
+        .status();
+
+    // Resume remoted if suspended (requires root, but we may be running elevated)
+    let _ = Command::new("sh")
+        .args(["-c", r#"
+            pid=$(pgrep -x remoted 2>/dev/null)
+            if [ -n "$pid" ]; then
+                state=$(ps -o stat= -p "$pid" 2>/dev/null)
+                case "$state" in
+                    *T*)
+                        echo "Resuming suspended remoted (PID $pid)"
+                        kill -CONT "$pid" 2>/dev/null
+                        ;;
+                esac
+            fi
+        "#])
+        .status();
 }

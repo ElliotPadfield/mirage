@@ -22,13 +22,47 @@ fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 cleanup() {
     echo ""
     step "Cleaning up"
-    # Kill any sidecar we started on port 54323
+    # Graceful shutdown: SIGTERM first, wait, then SIGKILL
     PIDS=$(lsof -ti:54323 2>/dev/null || true)
     if [ -n "$PIDS" ]; then
-        echo "$PIDS" | xargs sudo kill 2>/dev/null || true
-        ok "Sidecar stopped"
+        echo "$PIDS" | xargs sudo kill -TERM 2>/dev/null || true
+        # Wait up to 5 seconds for graceful exit
+        for i in $(seq 1 10); do
+            if ! lsof -ti:54323 >/dev/null 2>&1; then
+                ok "Sidecar stopped gracefully"
+                break
+            fi
+            if [ "$i" -eq 10 ]; then
+                warn "Sidecar did not exit in time, force killing"
+                lsof -ti:54323 2>/dev/null | xargs sudo kill -9 2>/dev/null || true
+            fi
+            sleep 0.5
+        done
     else
         ok "Nothing to clean up"
+    fi
+
+    # Clean up orphaned utun interfaces with pymobiledevice3 tunnel addresses
+    for iface in $(ifconfig -l 2>/dev/null); do
+        case "$iface" in utun*)
+            if ifconfig "$iface" 2>/dev/null | grep -q 'inet6 fd'; then
+                warn "Cleaning orphaned tunnel interface: $iface"
+                sudo ifconfig "$iface" down 2>/dev/null || true
+            fi
+        ;; esac
+    done
+
+    # Resume remoted if suspended
+    REMOTED_PID=$(pgrep -x remoted 2>/dev/null || true)
+    if [ -n "$REMOTED_PID" ]; then
+        REMOTED_STATE=$(ps -o stat= -p "$REMOTED_PID" 2>/dev/null || true)
+        case "$REMOTED_STATE" in
+            *T*)
+                warn "Resuming suspended remoted daemon"
+                sudo kill -CONT "$REMOTED_PID" 2>/dev/null || true
+                ok "remoted resumed"
+                ;;
+        esac
     fi
 }
 trap cleanup EXIT INT TERM

@@ -12,8 +12,33 @@ from ..utils.helpers import is_running_as_admin, get_platform_name
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.remote.tunnel_service import CoreDeviceTunnelProxy, create_core_device_tunnel_service_using_rsd
 from pymobiledevice3.remote.utils import stop_remoted_if_required, resume_remoted_if_required, get_rsds
+from ..cleanup import track_utun_interface, untrack_utun_interface
 
 logger = logging.getLogger(__name__)
+
+
+def _track_tunnel_result(tunnel_result):
+    """Extract and track the utun interface name from a tunnel result."""
+    name = None
+    if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+        name = tunnel_result.interface
+    elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+        name = tunnel_result.tunnel.tun.name
+    if name:
+        track_utun_interface(name)
+    return name
+
+
+def _untrack_tunnel_result(tunnel_result):
+    """Untrack the utun interface after clean teardown."""
+    name = None
+    if hasattr(tunnel_result, 'interface') and tunnel_result.interface:
+        name = tunnel_result.interface
+    elif hasattr(tunnel_result, 'tunnel') and hasattr(tunnel_result.tunnel, 'tun') and tunnel_result.tunnel.tun:
+        name = tunnel_result.tunnel.tun.name
+    if name:
+        untrack_utun_interface(name)
+
 
 devices_bp = Blueprint('devices', __name__)
 device_service = DeviceService()
@@ -89,6 +114,7 @@ async def _start_quic_tunnel(service_provider):
 
     async with service.start_quic_tunnel() as tunnel_result:
         resume_remoted_if_required()
+        _track_tunnel_result(tunnel_result)
 
         logger.info(f"QUIC Address: {tunnel_result.address}")
         logger.info(f"QUIC Port: {tunnel_result.port}")
@@ -99,6 +125,8 @@ async def _start_quic_tunnel(service_provider):
             if terminate_tunnel_thread:
                 return
             await asyncio.sleep(0.5)
+
+    _untrack_tunnel_result(tunnel_result)
 
 
 def _run_quic_tunnel(service_provider):
@@ -131,6 +159,7 @@ async def _start_tcp_tunnel(udid):
 
     async with service.start_tcp_tunnel() as tunnel_result:
         resume_remoted_if_required()
+        _track_tunnel_result(tunnel_result)
 
         logger.info(f"TCP Address: {tunnel_result.address}")
         logger.info(f"TCP Port: {tunnel_result.port}")
@@ -141,6 +170,8 @@ async def _start_tcp_tunnel(udid):
             if terminate_tunnel_thread:
                 return
             await asyncio.sleep(0.5)
+
+    _untrack_tunnel_result(tunnel_result)
 
 
 def _run_tcp_tunnel(udid):
@@ -173,6 +204,7 @@ async def _start_wifi_tcp_tunnel(udid):
 
     async with service.start_tcp_tunnel() as tunnel_result:
         resume_remoted_if_required()
+        _track_tunnel_result(tunnel_result)
 
         logger.info(f"WiFi TCP Address: {tunnel_result.address}")
         logger.info(f"WiFi TCP Port: {tunnel_result.port}")
@@ -183,6 +215,8 @@ async def _start_wifi_tcp_tunnel(udid):
             if terminate_tunnel_thread:
                 return
             await asyncio.sleep(0.5)
+
+    _untrack_tunnel_result(tunnel_result)
 
 
 async def _start_wifi_quic_tunnel(udid, wifi_address, wifi_port):
@@ -197,6 +231,7 @@ async def _start_wifi_quic_tunnel(udid, wifi_address, wifi_port):
 
     async with service.start_quic_tunnel() as tunnel_result:
         resume_remoted_if_required()
+        _track_tunnel_result(tunnel_result)
 
         logger.info(f"WiFi QUIC Address: {tunnel_result.address}")
         logger.info(f"WiFi QUIC Port: {tunnel_result.port}")
@@ -207,6 +242,8 @@ async def _start_wifi_quic_tunnel(udid, wifi_address, wifi_port):
             if terminate_tunnel_thread:
                 return
             await asyncio.sleep(0.5)
+
+    _untrack_tunnel_result(tunnel_result)
 
 
 def _run_wifi_tunnel(udid, ios_version, wifi_address=None, wifi_port_val=None):
