@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "mirage"
-version = "3.0.0"
+version = "1.0.1"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
