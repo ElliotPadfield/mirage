@@ -1,6 +1,9 @@
 from flask import Flask
 from flask_cors import CORS
 import logging
+import os
+import signal
+import threading
 
 from .config import Config
 from .api.devices import devices_bp
@@ -32,6 +35,16 @@ def create_app():
     @app.route('/health')
     def health():
         return {'status': 'healthy', 'version': Config.APP_VERSION_NUMBER}
+
+    # Shutdown endpoint — allows the Tauri app to stop the sidecar
+    # even when it runs as root (where direct kill signals would fail)
+    @app.route('/shutdown', methods=['POST'])
+    def shutdown():
+        from .cleanup import cleanup
+        cleanup()
+        # Schedule process exit after response is sent
+        threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        return {'status': 'shutting_down'}
 
     # Root endpoint
     @app.route('/')

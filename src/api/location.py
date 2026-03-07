@@ -275,11 +275,12 @@ def check_existing_tunnel():
 # Location simulation
 # ---------------------------------------------------------------------------
 
-async def _location_simulation_loop(lat, lng, stop_event):
+async def _location_simulation_loop(lat, lng, stop_event, ready_event):
     """Connect to the device via RSD and keep location simulation alive.
 
     Works for iOS 17+ where rsd_host/rsd_port have been set by a tunnel.
-    Blocks until *stop_event* is set.
+    Blocks until *stop_event* is set.  Sets *ready_event* once the location
+    has been applied so the caller knows it succeeded.
     """
     if rsd_host is None or rsd_port is None:
         raise RuntimeError("Tunnel data not available for DVT services")
@@ -305,6 +306,7 @@ async def _location_simulation_loop(lat, lng, stop_event):
 
                     simulation.set(lat, lng)
                     logger.info(f"Location set successfully: {lat}, {lng}")
+                    ready_event.set()
 
                     # Keep connection alive until told to stop
                     while not stop_event.is_set():
@@ -329,7 +331,7 @@ async def _location_simulation_loop(lat, lng, stop_event):
     raise last_error or RuntimeError("Failed to connect to device after retries")
 
 
-def _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client):
+def _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client, ready_event):
     """Keep a DVT location simulation alive for iOS < 17.
 
     Runs synchronously (called inside a thread).  The DVT context is kept
@@ -345,6 +347,7 @@ def _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client):
                 pass
             simulation.set(lat, lng)
             logger.info(f"[legacy] Location set: {lat}, {lng}")
+            ready_event.set()
 
             while not stop_event.is_set():
                 time.sleep(0.5)
@@ -364,32 +367,33 @@ def start_location_thread(lat, lng, lockdown_client=None):
 
     For iOS 17+ (lockdown_client is None) this uses the async RSD loop.
     For iOS < 17 (lockdown_client provided) this uses the legacy DVT path.
+
+    Blocks until the location is confirmed set on the device (up to 15 s).
+    Raises RuntimeError if the simulation fails to start.
     """
     global location_thread, terminate_location_thread
 
     stop_location_thread()
     terminate_location_thread = False
     stop_event = threading.Event()
+    ready_event = threading.Event()
 
     if lockdown_client is not None:
         # iOS < 17 – synchronous DVT loop
         def _target():
             try:
-                _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client)
+                _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client, ready_event)
             except Exception as e:
                 logger.error(f"Legacy location thread error: {e}")
 
         location_thread = threading.Thread(target=_target, daemon=True, name="LocationSimLegacy")
     else:
         # iOS 17+ – async RSD loop
-        error_holder = [None]
-
         def _target():
             try:
-                asyncio.run(_location_simulation_loop(lat, lng, stop_event))
+                asyncio.run(_location_simulation_loop(lat, lng, stop_event, ready_event))
             except Exception as e:
                 logger.error(f"Location thread error: {type(e).__name__}: {e}")
-                error_holder[0] = e
 
         location_thread = threading.Thread(target=_target, daemon=True, name="LocationSim17")
 
@@ -397,11 +401,11 @@ def start_location_thread(lat, lng, lockdown_client=None):
     location_thread._stop_event = stop_event
     location_thread.start()
 
-    # Give the simulation a moment to connect and set location
-    time.sleep(3)
-
-    if not location_thread.is_alive():
-        raise RuntimeError("Location simulation thread exited unexpectedly")
+    # Wait for the simulation to actually set the location (up to 15 s)
+    if not ready_event.wait(timeout=15):
+        if not location_thread.is_alive():
+            raise RuntimeError("Location simulation failed — check device connection and Developer Mode")
+        raise RuntimeError("Location simulation timed out — device may be unresponsive")
 
 
 def stop_location_thread():
@@ -417,6 +421,25 @@ def stop_location_thread():
         if location_thread.is_alive():
             location_thread.join(timeout=5)
         location_thread = None
+
+
+def _ensure_tunnel(udid, ios_version, connection_type):
+    """Create a tunnel if none exists, and cache the result."""
+    # Check for an external tunnel (pymobiledevice3 remote start-tunnel)
+    if not check_existing_tunnel():
+        # Create our own tunnel
+        if not start_tunnel_thread(udid, ios_version):
+            raise RuntimeError(
+                "Failed to establish tunnel. Make sure you are running with sudo / root "
+                "and Developer Mode is enabled on the device."
+            )
+    # Cache the tunnel data
+    if rsd_host is not None and rsd_port is not None:
+        rsd_data_map.setdefault(udid, {})[connection_type] = {
+            "host": rsd_host,
+            "port": rsd_port,
+        }
+        logger.info(f"Cached tunnel data: {rsd_data_map}")
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +517,7 @@ def set_location():
         ios_version = '17.0'  # safe default
         try:
             temp_lockdown = create_using_usbmux(udid, autopair=True)
-            ios_version = temp_lockdown.get_value('ProductVersion', '0.0') or '17.0'
+            ios_version = temp_lockdown.product_version or '17.0'
             logger.info(f"Detected iOS version: {ios_version}")
         except Exception as ve:
             logger.warning(f"Could not get iOS version: {ve}, assuming 17+")
@@ -505,30 +528,28 @@ def set_location():
 
             # Check cached tunnel data first
             cached = rsd_data_map.get(udid, {}).get(connection_type)
+            used_cache = False
             if cached and cached.get('host') and cached.get('port'):
                 global rsd_host, rsd_port
                 rsd_host = cached['host']
                 rsd_port = cached['port']
+                used_cache = True
                 logger.info(f"Reusing cached tunnel: {rsd_host}:{rsd_port}")
             else:
-                # Check for an external tunnel (pymobiledevice3 remote start-tunnel)
-                if not check_existing_tunnel():
-                    # Create our own tunnel
-                    if not start_tunnel_thread(udid, ios_version):
-                        raise RuntimeError(
-                            "Failed to establish tunnel. Make sure you are running with sudo / root "
-                            "and Developer Mode is enabled on the device."
-                        )
-                # Cache the tunnel data
-                if rsd_host is not None and rsd_port is not None:
-                    rsd_data_map.setdefault(udid, {})[connection_type] = {
-                        "host": rsd_host,
-                        "port": rsd_port,
-                    }
-                    logger.info(f"Cached tunnel data: {rsd_data_map}")
+                _ensure_tunnel(udid, ios_version, connection_type)
 
             # Start persistent location simulation thread (iOS 17+ path)
-            start_location_thread(lat, lng)
+            try:
+                start_location_thread(lat, lng)
+            except RuntimeError:
+                if not used_cache:
+                    raise
+                # Cached tunnel is stale — invalidate and create a fresh one
+                logger.warning("Cached tunnel is stale, creating fresh tunnel")
+                rsd_data_map.pop(udid, None)
+                stop_tunnel_thread()
+                _ensure_tunnel(udid, ios_version, connection_type)
+                start_location_thread(lat, lng)
 
         else:
             # ---- iOS < 17 ----
