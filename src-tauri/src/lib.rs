@@ -137,15 +137,28 @@ pub fn run() {
             let skip_sidecar = std::env::var("MIRAGE_SKIP_SIDECAR").unwrap_or_default() == "1";
 
             tauri::async_runtime::spawn(async move {
-                // 1. Check if a sidecar is already running (dev.sh started it, or previous instance)
-                if health_check().await {
-                    println!("Python backend already running");
-                    let state = app_handle.state::<AppState>();
-                    *state.python_running.lock().unwrap() = true;
-                    return;
+                // 1. If a stale sidecar is running from a previous session, shut it down
+                //    so we always start fresh with the current binary.
+                if !skip_sidecar && health_check().await {
+                    println!("Found stale sidecar from previous session, shutting it down...");
+                    // Use /shutdown endpoint (works even when sidecar is root-owned)
+                    let client = reqwest::Client::builder()
+                        .timeout(Duration::from_secs(3))
+                        .build()
+                        .unwrap_or_default();
+                    let _ = client.post("http://127.0.0.1:54323/shutdown").send().await;
+                    // Wait for it to die
+                    for _ in 0..10 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if !health_check().await {
+                            println!("Stale sidecar shut down successfully");
+                            break;
+                        }
+                    }
                 }
 
                 if skip_sidecar {
+                    // In dev mode, dev.sh manages the sidecar — just wait for it
                     println!("MIRAGE_SKIP_SIDECAR=1, waiting for external sidecar...");
                 } else {
                     // 2. Try launching with elevated privileges (shows macOS password prompt)
@@ -222,8 +235,39 @@ pub fn run() {
 }
 
 /// Graceful shutdown: SIGTERM → wait → SIGKILL → cleanup orphaned state.
+///
+/// The sidecar runs as root (launched via osascript with admin privileges),
+/// so we need to use the /api/shutdown endpoint first (runs in-process),
+/// then fall back to signal-based shutdown. Direct `kill` from a non-root
+/// Tauri process cannot signal root-owned PIDs.
 fn graceful_sidecar_shutdown() {
-    // 1. Find the sidecar PID(s) on port 54323
+    // 1. Try graceful HTTP shutdown (sidecar handles this in-process, no root needed)
+    let http_shutdown = Command::new("sh")
+        .args(["-c", "curl -sf -X POST http://127.0.0.1:54323/shutdown --max-time 2 2>/dev/null"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if http_shutdown {
+        // Wait for process to exit after handling shutdown
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let check = Command::new("sh")
+                .args(["-c", "lsof -ti:54323 2>/dev/null"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if check.is_empty() {
+                println!("Sidecar exited gracefully via /shutdown");
+                cleanup_orphaned_state();
+                return;
+            }
+        }
+        println!("Sidecar did not exit after /shutdown, trying signals");
+    }
+
+    // 2. Fall back to signal-based shutdown (may fail if sidecar is root-owned)
     let pids = Command::new("sh")
         .args(["-c", "lsof -ti:54323 2>/dev/null"])
         .output()
@@ -234,13 +278,11 @@ fn graceful_sidecar_shutdown() {
         });
 
     if let Some(pid_str) = &pids {
-        // 2. Send SIGTERM (allows Python signal handlers to run cleanup)
         println!("Sending SIGTERM to sidecar PIDs: {}", pid_str);
         let _ = Command::new("sh")
             .args(["-c", &format!("echo '{}' | xargs kill -TERM 2>/dev/null", pid_str)])
             .status();
 
-        // 3. Wait up to 5 seconds for graceful exit
         let mut exited = false;
         for _ in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -257,7 +299,6 @@ fn graceful_sidecar_shutdown() {
             }
         }
 
-        // 4. Force kill if still running
         if !exited {
             println!("Sidecar did not exit in time, sending SIGKILL");
             let _ = Command::new("sh")
@@ -267,8 +308,6 @@ fn graceful_sidecar_shutdown() {
         }
     }
 
-    // 5. Fallback cleanup: remove orphaned utun interfaces and resume remoted
-    //    This runs regardless of whether SIGTERM worked, to catch crash leftovers.
     cleanup_orphaned_state();
 }
 

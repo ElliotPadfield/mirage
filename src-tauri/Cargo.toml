@@ -1,6 +1,6 @@
 [package]
 name = "mirage"
-version = "1.0.2"
+version = "1.0.3"
 description = "Mirage - Your location, Anywhere!"
 authors = ["Mirage Team"]
 edition = "2021"

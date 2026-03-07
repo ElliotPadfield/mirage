@@ -22,22 +22,22 @@ fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 cleanup() {
     echo ""
     step "Cleaning up"
-    # Graceful shutdown: SIGTERM first, wait, then SIGKILL
-    PIDS=$(lsof -ti:54323 2>/dev/null || true)
-    if [ -n "$PIDS" ]; then
-        echo "$PIDS" | xargs sudo kill -TERM 2>/dev/null || true
-        # Wait up to 5 seconds for graceful exit
+    # Try HTTP shutdown first (works even when sidecar is root-owned)
+    if curl -sf -X POST http://127.0.0.1:54323/shutdown --max-time 2 >/dev/null 2>&1; then
         for i in $(seq 1 10); do
-            if ! lsof -ti:54323 >/dev/null 2>&1; then
-                ok "Sidecar stopped gracefully"
+            if ! sudo lsof -ti:54323 >/dev/null 2>&1; then
+                ok "Sidecar stopped via /shutdown"
                 break
-            fi
-            if [ "$i" -eq 10 ]; then
-                warn "Sidecar did not exit in time, force killing"
-                lsof -ti:54323 2>/dev/null | xargs sudo kill -9 2>/dev/null || true
             fi
             sleep 0.5
         done
+    fi
+    # Force kill any remaining processes
+    PIDS=$(sudo lsof -ti:54323 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+        echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
+        sleep 0.5
+        ok "Sidecar force killed"
     else
         ok "Nothing to clean up"
     fi
@@ -162,9 +162,17 @@ ok "Copied to $SIDECAR_TARGET"
 step "Starting Python sidecar with sudo (needed for iOS 17+ tunnels)"
 echo -e "  ${YELLOW}You may be prompted for your password${NC}"
 
-# Kill anything already on the port
-lsof -ti:54323 2>/dev/null | xargs kill -9 2>/dev/null || true
-sleep 0.5
+# Kill anything already on the port (needs sudo since sidecar runs as root)
+EXISTING_PIDS=$(sudo lsof -ti:54323 2>/dev/null || true)
+if [ -n "$EXISTING_PIDS" ]; then
+    echo "$EXISTING_PIDS" | xargs sudo kill -9 2>/dev/null || true
+    sleep 1
+    # Verify they're dead
+    if sudo lsof -ti:54323 >/dev/null 2>&1; then
+        fail "Could not kill existing sidecar on port 54323"
+    fi
+    ok "Killed existing sidecar"
+fi
 
 # Start sidecar as root in background, redirect output so we can see errors
 sudo "$PWD/$SIDECAR_TARGET" --port 54323 --host 127.0.0.1 --electron > /tmp/mirage-sidecar.log 2>&1 &

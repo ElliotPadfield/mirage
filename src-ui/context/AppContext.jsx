@@ -452,9 +452,10 @@ export function AppProvider({ children }) {
     
     startLocationSimulation: async (udid) => {
       try {
+        const connType = state.selectedDevice?.connection_type || 'USB'
         await apiCall('/location/set', {
           method: 'POST',
-          body: JSON.stringify({ udid })
+          body: JSON.stringify({ udid, connType })
         })
         actions.setLocationActive(true)
 

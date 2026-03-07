@@ -40,6 +40,22 @@ def _untrack_tunnel_result(tunnel_result):
         untrack_utun_interface(name)
 
 
+def _is_tunnel_alive(host, port):
+    """Quick check if the tunnel address is reachable (TCP connect with short timeout)."""
+    if not host or not port:
+        return False
+    import socket
+    try:
+        port_int = int(port) if isinstance(port, str) else port
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect((host, port_int, 0, 0))
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 devices_bp = Blueprint('devices', __name__)
 device_service = DeviceService()
 
@@ -332,13 +348,16 @@ def connect_device():
         if not udid or not connection_type:
             return jsonify({'error': 'Missing required fields'}), 400
 
-        # Check if we have cached connection data
+        # Check if we have cached connection data and the tunnel is still alive
         conn_type_enum = ConnectionType(connection_type)
         cached_data = device_service.get_connection_data(udid, conn_type_enum)
 
-        if cached_data:
+        if cached_data and _is_tunnel_alive(cached_data.rsd_host, cached_data.rsd_port):
             logger.info(f"Using cached connection data for {udid}")
             return jsonify({'rsd_data': cached_data.to_dict()})
+        elif cached_data:
+            logger.warning(f"Cached tunnel for {udid} is stale, creating fresh tunnel")
+            device_service.clear_connection_data(udid)
 
         # Handle different connection types
         if connection_type == 'USB':
