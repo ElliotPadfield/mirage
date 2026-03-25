@@ -73,3 +73,23 @@ build/python/mirage-backend
 # Tauri
 src-tauri/target/
 src-tauri/binaries/mirage-backend-*
+
+# Design files
+*.pen
+*.pen.lock
+
+# Signing keys
+*.key
+*.key.pub
+*.pem
+*.p12
+*.pfx
+
+# Secrets
+*.secret
+credentials*
+secrets/
+
+# Pencil/design generated images
+images/generated-*
+.claxedo/

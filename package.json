@@ -1,7 +1,7 @@
 {
   "name": "mirage",
   "version": "1.0.3",
-  "description": "Mirage - Location Simulation Tool",
+  "description": "Mirage",
   "author": {
     "name": "Mirage Team"
   },
@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.0",
     "leaflet": "^1.9.4",
     "motion": "^12.0.0",
     "react": "^18.2.0",

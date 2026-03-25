@@ -1,9 +1,21 @@
 use serde::Serialize;
+use std::io::Write;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
+
+fn log_to_file(msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/mirage-app.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+    println!("{}", msg);
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct PythonStatus {
@@ -66,11 +78,8 @@ async fn health_check() -> bool {
 }
 
 /// Resolve the sidecar binary path.
-/// In production: `AppName.app/Contents/MacOS/mirage-backend`
-/// In dev: `src-tauri/binaries/mirage-backend-<triple>`
+/// Tauri v2 bundles external binaries into Contents/MacOS/ with the triple suffix.
 fn resolve_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // Tauri's shell sidecar resolves the path automatically, but we need the
-    // raw path for osascript elevation.
     let triple = if cfg!(target_arch = "aarch64") {
         "aarch64-apple-darwin"
     } else {
@@ -79,12 +88,29 @@ fn resolve_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 
     let binary_name_with_triple = format!("mirage-backend-{}", triple);
 
-    // Production path: Tauri bundles sidecars in Contents/MacOS/ (without the triple suffix)
+    // Production: Tauri bundles sidecars in Contents/MacOS/ WITH the triple suffix
     if let Ok(resource_dir) = app.path().resource_dir() {
         if let Some(contents_dir) = resource_dir.parent() {
-            let macos_path = contents_dir.join("MacOS").join("mirage-backend");
-            if macos_path.exists() {
-                return Some(macos_path);
+            let macos_dir = contents_dir.join("MacOS");
+            // Try with triple suffix first (Tauri v2 default)
+            let path_with_triple = macos_dir.join(&binary_name_with_triple);
+            if path_with_triple.exists() {
+                println!("Found sidecar at: {:?}", path_with_triple);
+                return Some(path_with_triple);
+            }
+            // Try without triple suffix as fallback
+            let path_without_triple = macos_dir.join("mirage-backend");
+            if path_without_triple.exists() {
+                println!("Found sidecar at: {:?}", path_without_triple);
+                return Some(path_without_triple);
+            }
+            eprintln!("Sidecar not found in MacOS dir. Checked: {:?} and {:?}", path_with_triple, path_without_triple);
+            // List what's actually in the MacOS dir for debugging
+            if let Ok(entries) = std::fs::read_dir(&macos_dir) {
+                eprintln!("Contents of {:?}:", macos_dir);
+                for entry in entries.flatten() {
+                    eprintln!("  {:?}", entry.file_name());
+                }
             }
         }
     }
@@ -92,36 +118,52 @@ fn resolve_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     // Dev path (relative to src-tauri)
     let dev_path = std::path::PathBuf::from("binaries").join(&binary_name_with_triple);
     if dev_path.exists() {
+        println!("Found sidecar at dev path: {:?}", dev_path);
         return Some(dev_path);
     }
 
     None
 }
 
-/// Launch the sidecar with root privileges using macOS Authorization Services
-/// via osascript. Shows the standard macOS password prompt.
+/// Launch the sidecar with root privileges using osascript.
+/// Blocks until the user enters their password (or cancels).
 fn spawn_sidecar_elevated(sidecar_path: &std::path::Path) -> Result<(), String> {
     let path_str = sidecar_path.to_string_lossy();
 
-    // Use osascript to run the sidecar with admin privileges
-    // Custom prompt explains why admin is needed
-    // Quote the path and use nohup to ensure the process survives after osascript exits
+    // Use osascript to run the sidecar with admin privileges.
+    // `do shell script` has no TTY, so nohup fails — just background with &.
     let script = format!(
-        r#"do shell script "nohup '{}' --electron --port 54323 > /tmp/mirage-sidecar.log 2>&1 &" with administrator privileges with prompt "Mirage needs your permission to connect to your iPhone and set its location.""#,
+        r#"do shell script "'{}' --electron --port 54323 > /tmp/mirage-sidecar.log 2>&1 &" with administrator privileges with prompt "Mirage needs your permission to connect to your iPhone and set its location.""#,
         path_str
     );
 
-    let result = Command::new("osascript")
+    log_to_file(&format!("Running osascript for elevated sidecar launch: {}", path_str));
+    log_to_file(&format!("AppleScript: {}", script));
+    let output = Command::new("osascript")
         .arg("-e")
         .arg(&script)
-        .spawn();
+        .output();
 
-    match result {
-        Ok(_) => {
-            println!("Sidecar launched with elevated privileges via osascript");
-            Ok(())
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            log_to_file(&format!("osascript exit={}, stdout={}, stderr={}", o.status, stdout.trim(), stderr.trim()));
+            if o.status.success() {
+                log_to_file("Sidecar launched with elevated privileges via osascript");
+                Ok(())
+            } else {
+                if stderr.contains("User canceled") || stderr.contains("user canceled") || stderr.contains("-128") {
+                    Err(format!("User cancelled the password dialog"))
+                } else {
+                    Err(format!("osascript failed (exit {}): {}", o.status, stderr.trim()))
+                }
+            }
         }
-        Err(e) => Err(format!("Failed to launch elevated sidecar: {}", e)),
+        Err(e) => {
+            log_to_file(&format!("Failed to run osascript: {}", e));
+            Err(format!("Failed to run osascript: {}", e))
+        }
     }
 }
 
@@ -129,6 +171,8 @@ fn spawn_sidecar_elevated(sidecar_path: &std::path::Path) -> Result<(), String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             python_running: Mutex::new(false),
         })
@@ -139,8 +183,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // 1. If a stale sidecar is running from a previous session, shut it down
                 //    so we always start fresh with the current binary.
+                log_to_file("=== Mirage app starting ===");
                 if !skip_sidecar && health_check().await {
-                    println!("Found stale sidecar from previous session, shutting it down...");
+                    log_to_file("Found stale sidecar from previous session, shutting it down...");
                     // Use /shutdown endpoint (works even when sidecar is root-owned)
                     let client = reqwest::Client::builder()
                         .timeout(Duration::from_secs(3))
@@ -162,34 +207,25 @@ pub fn run() {
                     println!("MIRAGE_SKIP_SIDECAR=1, waiting for external sidecar...");
                 } else {
                     // 2. Try launching with elevated privileges (shows macOS password prompt)
-                    //    This is needed for iOS 17+ tunnel creation
-                    if let Some(sidecar_path) = resolve_sidecar_path(&app_handle) {
-                        println!("Launching sidecar with admin privileges: {:?}", sidecar_path);
-                        match spawn_sidecar_elevated(&sidecar_path) {
-                            Ok(_) => println!("Elevated sidecar launch initiated"),
-                            Err(e) => {
-                                eprintln!("Elevated launch failed: {}", e);
-                                // Fall back to non-elevated sidecar (limited functionality)
-                                println!("Falling back to non-elevated sidecar...");
-                                let shell = app_handle.shell();
-                                match shell
-                                    .sidecar("binaries/mirage-backend")
-                                    .expect("failed to create sidecar command")
-                                    .args(["--electron", "--port", "54323"])
-                                    .spawn()
-                                {
-                                    Ok((_rx, _child)) => {
-                                        println!("Non-elevated sidecar spawned");
-                                    }
-                                    Err(e2) => {
-                                        eprintln!("All sidecar launch methods failed: {}", e2);
-                                    }
-                                }
-                            }
-                        }
+                    //    This is needed for iOS 17+ tunnel creation.
+                    //    spawn_sidecar_elevated uses .output() which blocks, so run on a
+                    //    blocking thread to avoid stalling the async runtime.
+                    let sidecar_path = resolve_sidecar_path(&app_handle);
+                    let launch_result = if let Some(ref path) = sidecar_path {
+                        log_to_file(&format!("Launching sidecar with admin privileges: {:?}", path));
+                        let p = path.clone();
+                        tokio::task::spawn_blocking(move || spawn_sidecar_elevated(&p))
+                            .await
+                            .unwrap_or_else(|e| Err(format!("spawn_blocking failed: {}", e)))
                     } else {
-                        eprintln!("Could not find sidecar binary");
-                        // Try Tauri's built-in sidecar resolution as last resort
+                        log_to_file("Could not find sidecar binary");
+                        Err("Sidecar binary not found".to_string())
+                    };
+
+                    if let Err(e) = launch_result {
+                        log_to_file(&format!("Elevated launch failed: {}", e));
+                        // Fall back to non-elevated sidecar via Tauri shell
+                        println!("Falling back to non-elevated sidecar...");
                         let shell = app_handle.shell();
                         match shell
                             .sidecar("binaries/mirage-backend")
@@ -197,8 +233,12 @@ pub fn run() {
                             .args(["--electron", "--port", "54323"])
                             .spawn()
                         {
-                            Ok((_rx, _child)) => println!("Sidecar spawned via Tauri shell"),
-                            Err(e) => eprintln!("Failed to spawn sidecar: {}", e),
+                            Ok((_rx, _child)) => {
+                                println!("Non-elevated sidecar spawned");
+                            }
+                            Err(e2) => {
+                                eprintln!("All sidecar launch methods failed: {}", e2);
+                            }
                         }
                     }
                 }
@@ -207,13 +247,13 @@ pub fn run() {
                 for i in 0..30 {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     if health_check().await {
-                        println!("Python backend is ready! (attempt {})", i + 1);
+                        log_to_file(&format!("Python backend is ready! (attempt {})", i + 1));
                         let state = app_handle.state::<AppState>();
                         *state.python_running.lock().unwrap() = true;
                         return;
                     }
                 }
-                eprintln!("Python backend failed to start within 30 seconds");
+                log_to_file("Python backend failed to start within 30 seconds");
             });
 
             Ok(())

@@ -401,8 +401,8 @@ def start_location_thread(lat, lng, lockdown_client=None):
     location_thread._stop_event = stop_event
     location_thread.start()
 
-    # Wait for the simulation to actually set the location (up to 15 s)
-    if not ready_event.wait(timeout=15):
+    # Wait for the simulation to actually set the location (up to 8 s)
+    if not ready_event.wait(timeout=8):
         if not location_thread.is_alive():
             raise RuntimeError("Location simulation failed — check device connection and Developer Mode")
         raise RuntimeError("Location simulation timed out — device may be unresponsive")

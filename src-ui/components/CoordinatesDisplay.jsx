@@ -33,11 +33,19 @@ const CoordinatesDisplay = ({ location, onCopy, onSave }) => {
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="absolute bottom-5 left-5 z-[1000]"
+      className="absolute bottom-20 left-4 z-40"
     >
-      <div className="surface-overlay-strong pointer-events-auto rounded-2xl border border-subtle shadow-md px-4 py-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-secondary">Current Location</div>
-        <div className="mt-1 text-sm font-sf-mono text-primary">
+      <div
+        className="pointer-events-auto rounded-[20px] border px-4 py-3"
+        style={{
+          background: '#0F0F14CC',
+          backdropFilter: 'blur(24px)',
+          WebkitBackdropFilter: 'blur(24px)',
+          borderColor: '#FFFFFF10',
+        }}
+      >
+        <div className="text-xs font-medium uppercase tracking-wide" style={{ color: '#A1A1AA' }}>Current Location</div>
+        <div className="mt-1 text-sm font-mono text-white">
           {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
         </div>
         <AnimatePresence mode="wait">
@@ -59,25 +67,31 @@ const CoordinatesDisplay = ({ location, onCopy, onSave }) => {
                   if (e.key === 'Escape') handleCancel()
                 }}
                 placeholder="Name this location..."
-                className="w-full rounded-lg bg-[color:var(--surface-overlay)] px-3 py-1.5 text-xs text-primary placeholder:text-tertiary focus:outline-none focus:ring-1 focus:ring-accent"
+                className="w-full rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-1"
+                style={{
+                  background: '#FFFFFF08',
+                  caretColor: '#8B5CF6',
+                  '--tw-ring-color': '#8B5CF6',
+                }}
               />
               <div className="mt-1.5 flex items-center gap-2">
-                <button onClick={handleSave} className="text-xs font-medium text-accent hover:underline no-drag">
+                <button onClick={handleSave} className="text-xs font-medium hover:underline no-drag" style={{ color: '#8B5CF6' }}>
                   Save
                 </button>
-                <button onClick={handleCancel} className="text-xs font-medium text-tertiary hover:text-secondary no-drag">
+                <button onClick={handleCancel} className="text-xs font-medium no-drag" style={{ color: '#71717A' }}>
                   Cancel
                 </button>
               </div>
             </motion.div>
           ) : (
             <motion.div key="actions" className="mt-2 flex items-center gap-3">
-              <button onClick={onCopy} className="text-xs font-medium text-accent hover:underline no-drag">
+              <button onClick={onCopy} className="text-xs font-medium hover:underline no-drag" style={{ color: '#8B5CF6' }}>
                 Copy
               </button>
               <button
                 onClick={handleSave}
-                className="text-xs font-medium text-accent hover:underline no-drag"
+                className="text-xs font-medium hover:underline no-drag"
+                style={{ color: '#8B5CF6' }}
                 aria-label="Save location to favorites"
               >
                 Save

@@ -23,7 +23,7 @@ jobs:
           echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
           if [ "$CURRENT" != "$PREVIOUS" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Version changed: $PREVIOUS → $CURRENT"
+            echo "Version changed: $PREVIOUS -> $CURRENT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Version unchanged: $CURRENT"
@@ -82,7 +82,43 @@ jobs:
           cp build/python/mirage-backend src-tauri/binaries/mirage-backend-aarch64-apple-darwin
 
       - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target aarch64-apple-darwin
+
+      - name: Generate latest.json for updater
+        run: |
+          VERSION=${{ needs.check-version.outputs.version }}
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+
+          # Find the .tar.gz update bundle (Tauri generates this for macOS updater)
+          UPDATE_BUNDLE=$(find "$BUNDLE_DIR/macos" -name "*.tar.gz" | head -1)
+          if [ -z "$UPDATE_BUNDLE" ]; then
+            echo "No .tar.gz update bundle found, listing bundle contents:"
+            find "$BUNDLE_DIR" -type f
+            exit 1
+          fi
+
+          UPDATE_FILENAME=$(basename "$UPDATE_BUNDLE")
+          SIGNATURE=$(cat "${UPDATE_BUNDLE}.sig")
+
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "Mirage v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIGNATURE}",
+                "url": "https://github.com/ElliotPadfield/mirage/releases/download/v${VERSION}/${UPDATE_FILENAME}"
+              }
+            }
+          }
+          EOF
+
+          echo "Generated latest.json:"
+          cat latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -92,3 +128,5 @@ jobs:
           generate_release_notes: true
           files: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
+            latest.json

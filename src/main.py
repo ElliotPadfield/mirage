@@ -13,7 +13,7 @@ from src.cleanup import register_cleanup_handlers, startup_cleanup
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Mirage - Location Simulation Tool')
+    parser = argparse.ArgumentParser(description='Mirage')
     parser.add_argument('--electron', action='store_true', 
                        help='Run in Electron mode (no auto-browser)')
     parser.add_argument('--port', type=int, default=Config.PORT,

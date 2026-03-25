@@ -94,6 +94,16 @@ fi
 
 # ── 3. Install Python dependencies if needed ────────────
 step "Checking Python dependencies"
+
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+    warn "Creating virtual environment..."
+    python3 -m venv "$VENV_DIR"
+    ok "Virtual environment created"
+fi
+# Use the venv's python/pip for all subsequent steps
+export PATH="$PWD/$VENV_DIR/bin:$PATH"
+
 python3 -c "import flask; import pymobiledevice3" 2>/dev/null || {
     warn "Installing Python dependencies..."
     pip3 install -r requirements.txt
@@ -175,7 +185,7 @@ if [ -n "$EXISTING_PIDS" ]; then
 fi
 
 # Start sidecar as root in background, redirect output so we can see errors
-sudo "$PWD/$SIDECAR_TARGET" --port 54323 --host 127.0.0.1 --electron > /tmp/mirage-sidecar.log 2>&1 &
+sudo sh -c "\"$PWD/$SIDECAR_TARGET\" --port 54323 --host 127.0.0.1 --electron > /tmp/mirage-sidecar.log 2>&1" &
 
 # Wait for health check (sidecar takes ~5s cold start)
 for i in $(seq 1 20); do
