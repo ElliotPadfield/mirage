@@ -308,9 +308,23 @@ async def _location_simulation_loop(lat, lng, stop_event, ready_event):
                     logger.info(f"Location set successfully: {lat}, {lng}")
                     ready_event.set()
 
-                    # Keep connection alive until told to stop
+                    # Keep connection alive by periodically re-applying location.
+                    # This also serves as a health check — if the DVT connection
+                    # or tunnel has died, the set() call will raise and we'll
+                    # mark the simulation as failed so the frontend can detect it.
+                    refresh_interval = 5  # seconds between keepalive re-sets
+                    elapsed = 0.0
                     while not stop_event.is_set():
                         await asyncio.sleep(0.5)
+                        elapsed += 0.5
+                        if elapsed >= refresh_interval:
+                            elapsed = 0.0
+                            try:
+                                simulation.set(lat, lng)
+                            except Exception as e:
+                                logger.error(f"Location keepalive failed — connection lost: {e}")
+                                location_state.is_active = False
+                                return  # exit; frontend will detect via status poll
 
                     logger.info("Stop signal received – clearing location")
                     try:
@@ -385,6 +399,8 @@ def start_location_thread(lat, lng, lockdown_client=None):
                 _location_simulation_loop_legacy(lat, lng, stop_event, lockdown_client, ready_event)
             except Exception as e:
                 logger.error(f"Legacy location thread error: {e}")
+            finally:
+                location_state.is_active = False
 
         location_thread = threading.Thread(target=_target, daemon=True, name="LocationSimLegacy")
     else:
@@ -394,6 +410,9 @@ def start_location_thread(lat, lng, lockdown_client=None):
                 asyncio.run(_location_simulation_loop(lat, lng, stop_event, ready_event))
             except Exception as e:
                 logger.error(f"Location thread error: {type(e).__name__}: {e}")
+            finally:
+                # Ensure state reflects reality if thread exits for any reason
+                location_state.is_active = False
 
         location_thread = threading.Thread(target=_target, daemon=True, name="LocationSim17")
 

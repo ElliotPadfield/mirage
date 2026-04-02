@@ -540,6 +540,29 @@ export function AppProvider({ children }) {
     apiCall: apiCall
   }
   
+  // Poll backend for simulation health while active
+  useEffect(() => {
+    if (!state.isLocationActive) return
+
+    const intervalId = setInterval(async () => {
+      try {
+        const status = await apiCall('/location/status')
+        if (!status.is_active) {
+          dispatch({ type: ActionTypes.SET_LOCATION_ACTIVE, payload: false })
+          actions.addNotification({
+            type: 'error',
+            title: 'Simulation lost',
+            message: 'Location simulation stopped unexpectedly — the device connection was lost. Please restart.'
+          })
+        }
+      } catch {
+        // Backend unreachable — don't clear state yet, Python status check handles that
+      }
+    }, 10000)
+
+    return () => clearInterval(intervalId)
+  }, [state.isLocationActive])
+
   return (
     <AppContext.Provider value={{ state, actions, apiCall }}>
       {children}
