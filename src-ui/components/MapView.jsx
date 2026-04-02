@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import { useApp } from '../context/AppContext'
 import { initializeMapWithUserCountry } from '../utils/countryUtils'
-import 'leaflet/dist/leaflet.css'
 
 import L from 'leaflet'
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'

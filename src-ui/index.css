@@ -180,11 +180,6 @@
     background: #FFFFFF25;
   }
 
-  /* Isolate Leaflet's internal z-indexes so floating panels render above the map */
-  .leaflet-container {
-    isolation: isolate;
-  }
-
   .leaflet-popup-content-wrapper {
     background: var(--popup-background);
     color: var(--text-primary);
@@ -202,6 +197,13 @@
   .leaflet-popup-tip {
     background: var(--popup-background);
   }
+}
+
+/* Isolate Leaflet's internal z-indexes so floating panels render above the map.
+   Must be outside @layer so it beats Leaflet's unlayered CSS. */
+.leaflet-container {
+  isolation: isolate;
+  z-index: 0 !important;
 }
 
 @layer components {
