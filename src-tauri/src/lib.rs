@@ -38,7 +38,13 @@ struct AppState {
 
 #[tauri::command]
 async fn get_python_status(state: tauri::State<'_, AppState>) -> Result<PythonStatus, String> {
-    let running = *state.python_running.lock().unwrap();
+    let mut running = *state.python_running.lock().unwrap();
+    // The startup poll gives up after 30s, but a slow first launch can take longer.
+    // Re-check live so a late-starting sidecar is still picked up.
+    if !running && health_check().await {
+        *state.python_running.lock().unwrap() = true;
+        running = true;
+    }
     Ok(PythonStatus {
         running,
         port: 54323,
